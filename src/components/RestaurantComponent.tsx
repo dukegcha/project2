@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Calendar, Users, CalendarIcon } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -8,6 +8,9 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import CustomCalendar from '@/components/ui/custom-calendar';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { format } from 'date-fns';
+import LoginModal from '@/components/auth/LoginModal';
+import RegisterModal from '@/components/auth/RegisterModal';
+import { authAPI, availabilityAPI, reservationsAPI, formatDateForAPI, formatDateTimeForAPI } from '@/lib/api';
 
 interface MenuItem {
   id: string;
@@ -45,6 +48,98 @@ const RestaurantComponent: React.FC = () => {
   const [date, setDate] = useState<Date>();
   const [partySize, setPartySize] = useState<string>("");
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [showRegisterModal, setShowRegisterModal] = useState(false);
+  const [availableSlots, setAvailableSlots] = useState<string[]>([]);
+  const [selectedTime, setSelectedTime] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>("");
+  const [showTimeSelection, setShowTimeSelection] = useState(false);
+
+  // Check authentication status on component mount
+  useEffect(() => {
+    setIsAuthenticated(authAPI.isAuthenticated());
+  }, []);
+
+  // Fetch available time slots when date and party size are selected
+  useEffect(() => {
+    if (date && partySize) {
+      fetchAvailableSlots();
+    }
+  }, [date, partySize]);
+
+  const fetchAvailableSlots = async () => {
+    if (!date || !partySize) return;
+    
+    setLoading(true);
+    setError("");
+    
+    try {
+      const dateStr = formatDateForAPI(date);
+      const slots = await availabilityAPI.getAvailableSlots(dateStr, parseInt(partySize));
+      
+      // Extract available time slots
+      const available = slots
+        .filter(slot => slot.available)
+        .map(slot => slot.time);
+      
+      setAvailableSlots(available);
+      setShowTimeSelection(available.length > 0);
+      
+      if (available.length === 0) {
+        setError("No available time slots for the selected date and party size.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch availability");
+      setAvailableSlots([]);
+      setShowTimeSelection(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleReservation = async () => {
+    if (!date || !partySize || !selectedTime) return;
+    
+    if (!isAuthenticated) {
+      setShowLoginModal(true);
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const dateTimeStr = formatDateTimeForAPI(date, selectedTime);
+      
+      await reservationsAPI.createReservation({
+        party_size: parseInt(partySize),
+        reservation_time: dateTimeStr,
+      });
+
+      // Reset form and show success
+      setDate(undefined);
+      setPartySize("");
+      setSelectedTime("");
+      setShowTimeSelection(false);
+      setAvailableSlots([]);
+      
+      alert("Reservation confirmed! You will receive a confirmation email shortly.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create reservation");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAuthSuccess = () => {
+    setIsAuthenticated(true);
+    // Automatically proceed with reservation if form is complete
+    if (date && partySize && selectedTime) {
+      handleReservation();
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -117,31 +212,112 @@ const RestaurantComponent: React.FC = () => {
                     </Select>
                   </div>
 
-                  {/* Check Availability Button */}
+                  {/* Time Selection */}
+                  {showTimeSelection && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Select Time</label>
+                      <Select value={selectedTime} onValueChange={setSelectedTime}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Choose available time" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableSlots.map((time) => (
+                            <SelectItem key={time} value={time}>
+                              {time}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+
+                  {/* Make Reservation Button */}
                   <Button 
                     className="w-full bg-red-600 hover:bg-red-700 text-white py-3 text-lg"
-                    disabled={!date || !partySize}
+                    disabled={loading || !date || !partySize || (showTimeSelection && !selectedTime)}
+                    onClick={handleReservation}
                   >
-                    Check Availability
+                    {loading 
+                      ? 'Processing...' 
+                      : showTimeSelection 
+                      ? 'Make Reservation' 
+                      : 'Check Availability'
+                    }
                   </Button>
+
+                  {/* Error Message */}
+                  {error && (
+                    <div className="text-red-600 text-sm text-center">
+                      {error}
+                    </div>
+                  )}
                 </div>
 
                 {/* Sign In / Sign Up Buttons */}
-                <div className="mt-8 pt-6 border-t border-gray-200">
-                  <div className="flex space-x-4">
-                    <Button variant="outline" className="flex-1">
-                      Sign In
-                    </Button>
-                    <Button className="flex-1 bg-gray-900 hover:bg-gray-800">
-                      Sign Up
+                {!isAuthenticated && (
+                  <div className="mt-8 pt-6 border-t border-gray-200">
+                    <div className="flex space-x-4">
+                      <Button 
+                        variant="outline" 
+                        className="flex-1"
+                        onClick={() => setShowLoginModal(true)}
+                      >
+                        Sign In
+                      </Button>
+                      <Button 
+                        className="flex-1 bg-gray-900 hover:bg-gray-800"
+                        onClick={() => setShowRegisterModal(true)}
+                      >
+                        Sign Up
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Authenticated User Actions */}
+                {isAuthenticated && (
+                  <div className="mt-8 pt-6 border-t border-gray-200">
+                    <div className="text-center text-sm text-gray-600 mb-4">
+                      You are signed in ✓
+                    </div>
+                    <Button 
+                      variant="outline" 
+                      className="w-full"
+                      onClick={() => {
+                        authAPI.logout();
+                        setIsAuthenticated(false);
+                      }}
+                    >
+                      Sign Out
                     </Button>
                   </div>
-                </div>
+                )}
               </CardContent>
             </Card>
           </div>
         </div>
       </div>
+
+      {/* Authentication Modals */}
+      <LoginModal
+        isOpen={showLoginModal}
+        onClose={() => setShowLoginModal(false)}
+        onSuccess={handleAuthSuccess}
+        switchToRegister={() => {
+          setShowLoginModal(false);
+          setShowRegisterModal(true);
+        }}
+      />
+
+      <RegisterModal
+        isOpen={showRegisterModal}
+        onClose={() => setShowRegisterModal(false)}
+        onSuccess={handleAuthSuccess}
+        switchToLogin={() => {
+          setShowRegisterModal(false);
+          setShowLoginModal(true);
+        }}
+      />
     </div>
   );
 };
